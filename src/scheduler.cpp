@@ -8,6 +8,29 @@
 #include <queue>
 #include "scheduler.hpp"
 
+enum CoreMode { OFF, NAPPING, WAKING, IDLE, RUNNING };
+struct CoreInfo {
+    CoreMode mode; // what the core is doing right now
+    ProcessId_t pid; // process on the core, InvalidProcessId() if none
+    bool big; // true for cores 0-3, false for 4-7
+    PState_t p; // current P-state
+    Time_t idleSince; // when the core last became IDLE (for sleep thresholds)
+};
+
+extern CoreInfo cores[8];
+
+// Mechanism
+bool Dispatch(CPUId_t c); // start the next queued process on an IDLE core; false if queue empty
+void Park(CPUId_t c, CState_t cs); // put an IDLE core into C4 (NAPPING) or C6 (OFF)
+void Wake(CPUId_t c); // start waking a NAPPING/OFF core back to C1 (becomes WAKING)
+void SetSpeed(CPUId_t c, PState_t p);
+size_t QueueLength(); // processes waiting in the ready queue
+Time_t QueuedWork(); // sum of GetRemaining() over the ready queue, in us
+
+// Policy
+void PolicyOnTick(Time_t now); // called at the end of every TimerInterrupt
+void OnCoreIdle(CPUId_t c); // called when a core finishes a process and the queue is empty
+
 std::queue<ProcessId_t> readyQ;
 ProcessId_t running = InvalidProcessId();
 

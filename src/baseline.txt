@@ -1,0 +1,3 @@
+g++ -std=gnu++17 -O2 -o sim scheduler.cpp -L. -lsim -Wl,-rpath,'$ORIGIN'
+./sim
+Run stopped at 30:18:41 after consuming 2.07973 kWh
