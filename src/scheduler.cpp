@@ -5,39 +5,39 @@
 //  Created by ELMOOTAZBELLAH ELNOZAHY on 9/13/26.
 //
 
-#include <deque>
+#include <queue>
 #include <unordered_map>
 #include "scheduler.hpp"
 
 enum CoreMode { OFF, NAPPING, WAKING, IDLE, RUNNING };
 struct CoreInfo {
-    CoreMode mode; // what the core is doing right now
-    ProcessId_t pid; // process on the core, InvalidProcessId() if none
-    bool big; // true for cores 0-3, false for 4-7
-    PState_t p; // current P-state
-    Time_t idleSince; // when the core last became IDLE (for sleep thresholds)
+    CoreMode mode; //curr mode
+    ProcessId_t pid; 
+    bool big; // big = cores 0-3, small =  4-7
+    PState_t p; // curr pstate
+    Time_t idleSince; // last time cor ewas idle
 };
 
-extern CoreInfo cores[8];
+extern CoreInfo cores[8]; // total num ocres
 
 
 // Mechanism
-bool Dispatch(CPUId_t c); // start the next queued process on an IDLE core; false if queue empty
-void Park(CPUId_t c, CState_t cs); // put an IDLE core into C4 (NAPPING) or C6 (OFF)
-void Wake(CPUId_t c); // start waking a NAPPING/OFF core back to C1 (becomes WAKING)
+bool Dispatch(CPUId_t c); // start next queued proc on idle core, false if no queue
+void Park(CPUId_t c, CState_t cs); // idle -> c4 or c6
+void Wake(CPUId_t c); // core -> c1
 void SetSpeed(CPUId_t c, PState_t p);
-Time_t QueuedWork(); // sum of GetRemaining() over the ready queue, in us
+Time_t QueuedWork(); 
 
-// Policy
-void PolicyOnTick(Time_t now); // called at the end of every TimerInterrupt
-void OnCoreIdle(CPUId_t c); // called when a core finishes a process and the queue is empty
+void PolicyOnTick(Time_t now); //end of timer interrupt
+void OnCoreIdle(CPUId_t c); 
 
 std::deque<ProcessId_t> readyQ;
 std::unordered_map<ProcessId_t, CPUId_t> pidCoreMap; //map from pid to core
 
-//Initialize cores
+//init cores
 CoreInfo cores[8];
-static bool InitializeCores() {
+static bool init() {
+    //set all cores to idle, no processes on each cor eyet
     for(int i = 0; i < 8; i++) {
         cores[i].mode = IDLE;                    
         cores[i].pid = InvalidProcessId();
@@ -47,7 +47,7 @@ static bool InitializeCores() {
     }
     return true;
 }
-static bool coresInitialized = InitializeCores();
+static bool coresInitialized = init();
 
 bool Dispatch(CPUId_t c) {
     //Check if idle core and waiting process
@@ -55,13 +55,13 @@ bool Dispatch(CPUId_t c) {
         return false;
     }
     if (cores[c].mode == IDLE && !readyQ.empty()) {
-        //Get process from queue
+        //get proc
         ProcessId_t pid = readyQ.front();
         readyQ.pop_front();
-        //Run process
+        //run 
         LoadContext(pid, c);
         RunCore(c);
-        //Update core table and map
+        //update core
         cores[c].mode = RUNNING;
         cores[c].pid = pid;
         pidCoreMap[pid] = c;
@@ -71,23 +71,23 @@ bool Dispatch(CPUId_t c) {
 }
 
 void Park(CPUId_t c, CState_t cs) {
-    //Set cstate only if core is idle
-    if (cores[c].mode == IDLE && (cs == C4 || cs == C6)) {
+    //set cstate  if core idle
+    if ((cores[c].mode == IDLE) && (cs == C4 || cs == C6)) {
         SetCState(c, cs);
         cores[c].mode = ((cs == C4) ? NAPPING : OFF);
     }
 }
 
 void Wake(CPUId_t c) {
-    //Wake up core only if napping or off
-    if (cores[c].mode == NAPPING || cores[c].mode == OFF) {
+    //wake  core  if napping or off
+    if ((cores[c].mode == NAPPING) || (cores[c].mode == OFF)) {
         SetCState(c, C1);
         cores[c].mode = WAKING;
     }
 }
 
 void SetSpeed(CPUId_t c, PState_t p) {
-    //Update p state
+    //update p state
     SetPState(c, p);
     cores[c].p = p;
 }
@@ -101,34 +101,18 @@ Time_t QueuedWork() {
     return time;
 }
 
-
-
-// ===== POLICY (B) =====
-// Suhani: energy policy. Reads cores[]/readyQ, acts only through Park/Wake/SetSpeed.
-//
-// Why (numbers from the work-split tables):
-//  * Idle in C1 is expensive (9.6 big / 4.8 small) -> never leave a core idle; nap it in C4 (1.6 / 0.8).
-//  * Energy per unit work is lowest at P3 and lowest on small cores
-//    (small P3 11.7 < big P3 14 < small P2 15 < big P2 18 < small P0 18.3),
-//    so we wake MORE cores at P3 before raising any P-state. P4 is never used.
-//  * Waking costs time but no energy (core keeps drawing its sleep power), so C6 (0 W) is
-//    free to use; the only cost is 2 s latency. We therefore wake a C6 core only if the backlog
-//    would take longer than that latency to drain.
-//  * Decisions use observed state (queued work, core modes), never absolute clock times.
-
-
-// ---- tunables (sweep these for the report) ----
-static const Time_t NAP_WAKE_THRESH_US  = 100000;    // wake a C4 core if drain time exceeds this
-static const Time_t OFF_WAKE_THRESH_US  = 3000000;  // wake a C6 core if drain time exceeds this (~its wake latency)
-static const Time_t DEEP_AFTER_US       = 100000;   // C4 -> C6 after this long idle
-static const Time_t ESCALATE_THRESH_US  = 6000000;  // all cores awake and drain above this => speed up
-static const int    ESCALATE_TICKS      = 500;      // ...for this many consecutive ticks
-static const CPUId_t RESERVE_CORE       = 99;        // small core that is never demoted to C6
+//change these to get lowest kwh use
+static const Time_t NAP_WAKE_THRESH_US  = 100000;    // wake C4 if drain time exceeds 
+static const Time_t OFF_WAKE_THRESH_US  = 3000000;  // wake C6  if drain time exceeds
+static const Time_t DEEP_AFTER_US       = 100000;   // C4 -> C6 after this time in idle
+static const Time_t ESCALATE_THRESH_US  = 6000000;  // all cores wake and drain above this => speed up
+static const int    ESCALATE_TICKS      = 500;      // conseq ticks
+static const CPUId_t RESERVE_CORE       = 8;        //napping cores can be demoted to c6
 
 
 static bool    policyStarted = false;
-static bool    wantDeep[8]   = {false};   // core is being woken only so it can be re-parked in C6
-static PState_t level        = P3;        // global P-state used by every core
+static bool    wantDeep[8]   = {false};   
+static PState_t level        = P3;        // global pstate for all cores
 static int     backlogTicks  = 0;
 
 
@@ -138,7 +122,7 @@ static double CoreSpeed(CPUId_t c) {
 }
 
 
-// speed of cores that are (or will soon be) available for real work
+// speed of cores that can b used
 static double AwakeCapacity() {
    double cap = 0;
    for (CPUId_t c = 0; c < 8; c++)
@@ -155,8 +139,8 @@ static bool AnySleeper() {
 }
 
 
-// Best sleeping core to wake given the current drain estimate, or -1.
-// Order: small before big (more efficient), napping (fast wake) before off.
+// condo 1: small before bigg
+//condo 2: napping before off
 static int PickSleeper(double drain) {
    const CoreMode modes[2] = {NAPPING, OFF};
    for (int m = 0; m < 2; m++) {
@@ -170,11 +154,13 @@ static int PickSleeper(double drain) {
 
 
 static void ApplyLevel() {
-   for (CPUId_t c = 0; c < 8; c++) SetSpeed(c, level);
+   for (CPUId_t c = 0; c < 8; c++) {
+        SetSpeed(c, level);
+   }
+
 }
 
 
-// Called when a core is IDLE and nothing is queued: nap it (or sleep deeply if it was woken to do so).
 void OnCoreIdle(CPUId_t c) {
    Park(c, wantDeep[c] ? C6 : C4);
    wantDeep[c] = false;
@@ -182,35 +168,30 @@ void OnCoreIdle(CPUId_t c) {
 
 
 void PolicyOnTick(Time_t now) {
-   if (!policyStarted) {            // startup: everything to P3
+   if (!policyStarted) {            
        policyStarted = true;
        ApplyLevel();
    }
    for (CPUId_t c = 0; c < 8; c++)
        if (cores[c].mode == RUNNING) wantDeep[c] = false;
-
-
-   // 1. Never leave a core idling in C1 while there is nothing to run.
+   // conod 1 no core idleo n c1 when nothing on q
    if (readyQ.empty())
-       for (CPUId_t c = 0; c < 8; c++)
+       for (CPUId_t c = 0; c < 8; c++){
            if (cores[c].mode == IDLE) OnCoreIdle(c);
-
-
-   // 2. Capacity controller: wake enough cores that the backlog drains quickly.
+       }
+   // condo 2 wake enough cores to deal w backlock
    double work = (double)QueuedWork();
    double cap  = AwakeCapacity();
    if (work > 0) {
        for (;;) {
-           double drain = (cap > 1e-9) ? work / cap : 1e18;   // no awake core => must wake one
+           double drain = (cap > 1e-9) ? work / cap : 1e18;  
            int c = PickSleeper(drain);
            if (c < 0) break;
-           Wake((CPUId_t)c);                                  // counts as capacity immediately,
-           cap += CoreSpeed((CPUId_t)c);                      // so one backlog never over-wakes
+           Wake((CPUId_t)c);                              
+           cap += CoreSpeed((CPUId_t)c);                  
        }
    }
-
-
-   // 3. Speed escalation: only when every core is already awake and the backlog persists.
+   // condo 3 -- increase speed if (1) all cores awake and (2) backlock
    double drain = (cap > 1e-9) ? work / cap : 0;
    if (work > 0 && !AnySleeper() && drain > (double)ESCALATE_THRESH_US) {
        if (++backlogTicks >= ESCALATE_TICKS && level > P0) {
@@ -220,15 +201,13 @@ void PolicyOnTick(Time_t now) {
        }
    } else {
        backlogTicks = 0;
-       if (work == 0 && level != P3) {    // backlog cleared: back to the efficient speed
+       //back to lower speed
+       if (work == 0 && level != P3) { 
            level = P3;
            ApplyLevel();
        }
    }
-
-
-   // 4. Demote cores that have napped a long time with no work to C6 (0 W).
-   //    Mechanism only parks IDLE cores, so wake (free) then re-park in C6 on completion.
+   // napping cores -> c6
    if (readyQ.empty()) {
        for (CPUId_t c = 0; c < 8; c++) {
            if (c == RESERVE_CORE || cores[c].mode != NAPPING || wantDeep[c]) continue;
@@ -239,15 +218,15 @@ void PolicyOnTick(Time_t now) {
        }
    }
 }
-// ===== END POLICY (B) =====
+
 
 
 void CreateProcess(ProcessId_t pid) {
     // A new process has been created. Update the scheduler's data structures and decisions accordingly.
     SimOutput("CreateProcess(" + std::to_string(pid) + ")", 4);
-    //Push process onto ready queue
+    //Push process to queeu
     readyQ.push_back(pid);
-    //Dispatch to idle core if exists; start with small cores, then big cores
+    //Dispatch to idle core 
     for (CPUId_t c = 4; c < 8; c++) {
         Dispatch(c);
     }
@@ -261,15 +240,14 @@ void ExitProcess(ProcessId_t pid) {
     if(pidCoreMap.find(pid) == pidCoreMap.end()) {
         ThrowException("A process that was not running is calling exit!!!");
     }
-    //Clear process from map
+    //clear process from map
     CPUId_t c = pidCoreMap.at(pid);
     pidCoreMap.erase(pid);
-    //Update core
+    //update core
     cores[c].pid = InvalidProcessId();
     cores[c].mode = IDLE;
     cores[c].idleSince = Now();
     if (!readyQ.empty()) {
-        //Dispatch idle core if processes waiting
         Dispatch(c);
     } else {
         OnCoreIdle(c);
@@ -278,7 +256,6 @@ void ExitProcess(ProcessId_t pid) {
 
 void TimerInterrupt(Time_t now) {
     // You received a timer interrupt. This is where you want to execute scheduling decisions
-    // Dispatch waiting processes to idle cores
     if(!readyQ.empty()) {
         for (CPUId_t c = 4; c < 8; c++) {
             Dispatch(c);     
@@ -287,17 +264,17 @@ void TimerInterrupt(Time_t now) {
             Dispatch(c);
         }
     }
-    //Initiate policy
+    //init policy
     PolicyOnTick(now);
 }
 
 void CStateTransitionComplete(CPUId_t core_id){
-    //Mark core idle once finished waking
+    //mark core idle
     if (cores[core_id].mode == WAKING) {
         cores[core_id].mode = IDLE;
         cores[core_id].idleSince = Now();
         if (!readyQ.empty()) {
-            //Dispatch idle core if processes waiting
+            //dispacth idle core if proc waiting
             Dispatch(core_id);
         } else {
             OnCoreIdle(core_id);
